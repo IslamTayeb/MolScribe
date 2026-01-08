@@ -1,4 +1,5 @@
 import argparse
+import time
 from typing import List
 
 import cv2
@@ -93,19 +94,71 @@ class MolScribe:
         predictions = []
         self.decoder.compute_confidence = return_confidence
 
+        # Timing data collection
+        timing_data = {
+            'num_images': len(input_images),
+            'batch_size': batch_size,
+            'transform_time': 0,
+            'stack_to_device_time': 0,
+            'encoder_time': 0,
+            'decoder_time': 0,
+            'smiles_conversion_time': 0,
+            'batches': []
+        }
+
         for idx in range(0, len(input_images), batch_size):
             batch_images = input_images[idx:idx+batch_size]
+            batch_timing = {'batch_idx': idx // batch_size, 'batch_size': len(batch_images)}
+
+            # Transform timing
+            t0 = time.time()
             images = [self.transform(image=image, keypoints=[])['image'] for image in batch_images]
+            transform_elapsed = time.time() - t0
+            timing_data['transform_time'] += transform_elapsed
+            batch_timing['transform_time'] = transform_elapsed
+
+            # Stack and move to device timing
+            t0 = time.time()
             images = torch.stack(images, dim=0).to(device)
+            stack_elapsed = time.time() - t0
+            timing_data['stack_to_device_time'] += stack_elapsed
+            batch_timing['stack_to_device_time'] = stack_elapsed
+
             with torch.no_grad():
+                # Encoder timing
+                t0 = time.time()
                 features, hiddens = self.encoder(images)
+                encoder_elapsed = time.time() - t0
+                timing_data['encoder_time'] += encoder_elapsed
+                batch_timing['encoder_time'] = encoder_elapsed
+
+                # Decoder timing
+                t0 = time.time()
                 batch_predictions = self.decoder.decode(features, hiddens)
+                decoder_elapsed = time.time() - t0
+                timing_data['decoder_time'] += decoder_elapsed
+                batch_timing['decoder_time'] = decoder_elapsed
+
+            timing_data['batches'].append(batch_timing)
             predictions += batch_predictions
 
-        return self.convert_graph_to_output(predictions, input_images, return_confidence, return_atoms_bonds)
+        # SMILES conversion timing
+        t0 = time.time()
+        outputs = self.convert_graph_to_output(predictions, input_images, return_confidence, return_atoms_bonds)
+        timing_data['smiles_conversion_time'] = time.time() - t0
+
+        # Store timing for retrieval
+        self._last_timing = timing_data
+
+        return outputs
+
+    def get_last_timing(self):
+        """Get timing data from the last predict_images call."""
+        return getattr(self, '_last_timing', None)
 
 
     def convert_graph_to_output(self, predictions, input_images, return_confidence=False, return_atoms_bonds=False):
+        t0 = time.time()
         node_coords = [pred['chartok_coords']['coords'] for pred in predictions]
         node_symbols = [pred['chartok_coords']['symbols'] for pred in predictions]
         edges = [pred['edges'] for pred in predictions]
@@ -143,7 +196,18 @@ class MolScribe:
                             bond_list.append(bond_dict)
                 pred_dict["bonds"] = bond_list
             outputs.append(pred_dict)
+        
+        # Store timing for retrieval
+        self._last_convert_timing = {
+            'smiles_conversion_time': time.time() - t0,
+            'num_graphs': len(predictions)
+        }
+        
         return outputs
+
+    def get_last_convert_timing(self):
+        """Get timing data from the last convert_graph_to_output call."""
+        return getattr(self, '_last_convert_timing', None)
 
     def predict_image(self, image, return_atoms_bonds=False, return_confidence=False):
         return self.predict_images([
