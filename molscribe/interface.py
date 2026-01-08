@@ -89,7 +89,7 @@ class MolScribe:
         decoder.eval()
         return encoder, decoder
 
-    def predict_images(self, input_images: List, return_atoms_bonds=False, return_confidence=False, batch_size=16):
+    def predict_images(self, input_images: List, return_atoms_bonds=False, return_confidence=False, batch_size=16, skip_molblock=False):
         device = self.device
         predictions = []
         self.decoder.compute_confidence = return_confidence
@@ -144,7 +144,7 @@ class MolScribe:
 
         # SMILES conversion timing
         t0 = time.time()
-        outputs = self.convert_graph_to_output(predictions, input_images, return_confidence, return_atoms_bonds)
+        outputs = self.convert_graph_to_output(predictions, input_images, return_confidence, return_atoms_bonds, skip_molblock=skip_molblock)
         timing_data['smiles_conversion_time'] = time.time() - t0
 
         # Store timing for retrieval
@@ -157,14 +157,14 @@ class MolScribe:
         return getattr(self, '_last_timing', None)
 
 
-    def convert_graph_to_output(self, predictions, input_images, return_confidence=False, return_atoms_bonds=False):
+    def convert_graph_to_output(self, predictions, input_images, return_confidence=False, return_atoms_bonds=False, skip_molblock=False):
         t0 = time.time()
         node_coords = [pred['chartok_coords']['coords'] for pred in predictions]
         node_symbols = [pred['chartok_coords']['symbols'] for pred in predictions]
         edges = [pred['edges'] for pred in predictions]
         # node_symbols = [r_groups[symbol] if symbol in r_groups else symbol for symbol in node_symbols]
         smiles_list, molblock_list, r_success = convert_graph_to_smiles(
-            node_coords, node_symbols, edges, images=input_images)
+            node_coords, node_symbols, edges, images=input_images, skip_molblock=skip_molblock)
 
         outputs = []
         for smiles, molblock, pred in zip(smiles_list, molblock_list, predictions):
@@ -209,22 +209,22 @@ class MolScribe:
         """Get timing data from the last convert_graph_to_output call."""
         return getattr(self, '_last_convert_timing', None)
 
-    def predict_image(self, image, return_atoms_bonds=False, return_confidence=False):
+    def predict_image(self, image, return_atoms_bonds=False, return_confidence=False, skip_molblock=False):
         return self.predict_images([
-            image], return_atoms_bonds=return_atoms_bonds, return_confidence=return_confidence)[0]
+            image], return_atoms_bonds=return_atoms_bonds, return_confidence=return_confidence, skip_molblock=skip_molblock)[0]
 
-    def predict_image_files(self, image_files: List, return_atoms_bonds=False, return_confidence=False):
+    def predict_image_files(self, image_files: List, return_atoms_bonds=False, return_confidence=False, skip_molblock=False):
         input_images = []
         for path in image_files:
             image = cv2.imread(path)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             input_images.append(image)
         return self.predict_images(
-            input_images, return_atoms_bonds=return_atoms_bonds, return_confidence=return_confidence)
+            input_images, return_atoms_bonds=return_atoms_bonds, return_confidence=return_confidence, skip_molblock=skip_molblock)
 
-    def predict_image_file(self, image_file: str, return_atoms_bonds=False, return_confidence=False):
+    def predict_image_file(self, image_file: str, return_atoms_bonds=False, return_confidence=False, skip_molblock=False):
         return self.predict_image_files(
-            [image_file], return_atoms_bonds=return_atoms_bonds, return_confidence=return_confidence)[0]
+            [image_file], return_atoms_bonds=return_atoms_bonds, return_confidence=return_confidence, skip_molblock=skip_molblock)[0]
 
     def draw_prediction(self, prediction, image, notebook=False):
         if "atoms" not in prediction or "bonds" not in prediction:

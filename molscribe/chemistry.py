@@ -488,7 +488,7 @@ def _expand_functional_group(mol, mappings, debug=False):
     return smiles, mol
 
 
-def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
+def _convert_graph_to_smiles(coords, symbols, edges, image=None, skip_molblock=False, debug=False):
     mol = Chem.RWMol()
     n = len(symbols)
     ids = []
@@ -545,14 +545,13 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
             ratio = width / height
             coords = [[x * ratio * 10, y * 10] for x, y in coords]
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
-        # molblock is obtained before expanding func groups, otherwise the expanded group won't have coordinates.
-        # TODO: make sure molblock has the abbreviation information
-        # Validate molecule before MolToMolBlock to prevent hang on invalid structures
-        try:
-            Chem.SanitizeMol(mol.GetMol())
-            pred_molblock = Chem.MolToMolBlock(mol)
-        except:
+        # Skip molblock if not needed (avoids potential hang on malformed molecules)
+        if skip_molblock:
             pred_molblock = ''
+        else:
+            # molblock is obtained before expanding func groups, otherwise the expanded group won't have coordinates.
+            # TODO: make sure molblock has the abbreviation information
+            pred_molblock = Chem.MolToMolBlock(mol)
         pred_smiles, mol = _expand_functional_group(mol, {}, debug)
         success = True
     except Exception as e:
@@ -566,12 +565,16 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
     return pred_smiles, pred_molblock, success
 
 
-def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16):
+def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16, skip_molblock=False):
+    # Handle empty input case
+    if len(coords) == 0:
+        return [], [], 0.0
     with multiprocessing.Pool(num_workers) as p:
         if images is None:
-            results = p.starmap(_convert_graph_to_smiles, zip(coords, symbols, edges), chunksize=128)
+            args = [(c, s, e, None, skip_molblock) for c, s, e in zip(coords, symbols, edges)]
         else:
-            results = p.starmap(_convert_graph_to_smiles, zip(coords, symbols, edges, images), chunksize=128)
+            args = [(c, s, e, img, skip_molblock) for c, s, e, img in zip(coords, symbols, edges, images)]
+        results = p.starmap(_convert_graph_to_smiles, args, chunksize=128)
     smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
     return smiles_list, molblock_list, r_success
@@ -593,12 +596,7 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=
             mol = Chem.MolFromSmiles(pred_smiles, sanitize=False)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
         if molblock:
-            # Validate molecule before MolToMolBlock to prevent hang on invalid structures
-            try:
-                Chem.SanitizeMol(mol.GetMol() if hasattr(mol, 'GetMol') else mol)
-                pred_molblock = Chem.MolToMolBlock(mol)
-            except:
-                pred_molblock = ''
+            pred_molblock = Chem.MolToMolBlock(mol)
         pred_smiles, mol = _expand_functional_group(mol, mappings)
         success = True
     except Exception as e:
@@ -613,6 +611,9 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=
 
 
 def postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=False, num_workers=16):
+    # Handle empty input case
+    if len(smiles) == 0:
+        return [], [], 0.0
     with multiprocessing.Pool(num_workers) as p:
         if coords is not None and symbols is not None and edges is not None:
             results = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges), chunksize=128)
