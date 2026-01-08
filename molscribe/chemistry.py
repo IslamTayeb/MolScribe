@@ -547,7 +547,12 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
         # molblock is obtained before expanding func groups, otherwise the expanded group won't have coordinates.
         # TODO: make sure molblock has the abbreviation information
-        pred_molblock = Chem.MolToMolBlock(mol)
+        # Validate molecule before MolToMolBlock to prevent hang on invalid structures
+        try:
+            Chem.SanitizeMol(mol.GetMol())
+            pred_molblock = Chem.MolToMolBlock(mol)
+        except:
+            pred_molblock = ''
         pred_smiles, mol = _expand_functional_group(mol, {}, debug)
         success = True
     except Exception as e:
@@ -588,7 +593,12 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=
             mol = Chem.MolFromSmiles(pred_smiles, sanitize=False)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
         if molblock:
-            pred_molblock = Chem.MolToMolBlock(mol)
+            # Validate molecule before MolToMolBlock to prevent hang on invalid structures
+            try:
+                Chem.SanitizeMol(mol.GetMol() if hasattr(mol, 'GetMol') else mol)
+                pred_molblock = Chem.MolToMolBlock(mol)
+            except:
+                pred_molblock = ''
         pred_smiles, mol = _expand_functional_group(mol, mappings)
         success = True
     except Exception as e:
