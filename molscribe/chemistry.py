@@ -611,14 +611,38 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, skip_molblock=F
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
         _log2("_verify_chirality done")
         # Skip molblock if not needed (avoids potential hang on malformed molecules)
-        if skip_molblock:
+        # Also skip for very large molecules (>100 atoms) - likely garbage, not worth waiting for timeout
+        if skip_molblock or n > 100:
+            if n > 100:
+                _log2(f"Skipping MolToMolBlock for large molecule ({n} atoms)")
             pred_molblock = ''
         else:
             # molblock is obtained before expanding func groups, otherwise the expanded group won't have coordinates.
-            # TODO: make sure molblock has the abbreviation information
+            # Use timeout to avoid hanging on malformed molecules
             _log2("MolToMolBlock...")
-            pred_molblock = Chem.MolToMolBlock(mol)
-            _log2("MolToMolBlock done")
+            import multiprocessing
+            MOLBLOCK_TIMEOUT = 5  # seconds
+            try:
+                pool = multiprocessing.Pool(1)
+                async_result = pool.apply_async(Chem.MolToMolBlock, (mol,))
+                pred_molblock = async_result.get(timeout=MOLBLOCK_TIMEOUT)
+                pool.close()
+                pool.join()
+            except multiprocessing.TimeoutError:
+                _log2(f"MolToMolBlock TIMEOUT after {MOLBLOCK_TIMEOUT}s - skipping")
+                pool.terminate()
+                pool.join()
+                pred_molblock = ''
+            except Exception as e:
+                _log2(f"MolToMolBlock ERROR: {e}")
+                try:
+                    pool.terminate()
+                    pool.join()
+                except:
+                    pass
+                pred_molblock = ''
+            else:
+                _log2("MolToMolBlock done")
         _log2("_expand_functional_group...")
         pred_smiles, mol = _expand_functional_group(mol, {}, debug)
         _log2(f"_expand_functional_group done, SMILES={pred_smiles[:50] if pred_smiles else 'None'}")
