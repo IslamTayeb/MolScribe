@@ -13,6 +13,37 @@ rdkit.RDLogger.DisableLog('rdApp.*')
 # Set MOLSCRIBE_NUM_WORKERS env var to override (default=1 to avoid memory explosion from fork)
 _DEFAULT_NUM_WORKERS = int(os.environ.get('MOLSCRIBE_NUM_WORKERS', '1'))
 
+# Track skipped/failed molecules for debugging
+_SKIPPED_MOLECULES = []
+
+def record_skipped_molecule(reason: str, num_atoms: int = 0, symbols: list = None, smiles: str = None, details: str = None):
+    """Record a skipped or failed molecule for debugging."""
+    _SKIPPED_MOLECULES.append({
+        "reason": reason,
+        "num_atoms": num_atoms,
+        "symbols": symbols[:20] if symbols and len(symbols) > 20 else symbols,  # Truncate long lists
+        "smiles": smiles,
+        "details": details,
+    })
+
+def get_skipped_molecules():
+    """Get list of all skipped molecules."""
+    return _SKIPPED_MOLECULES.copy()
+
+def clear_skipped_molecules():
+    """Clear the skipped molecules list."""
+    _SKIPPED_MOLECULES.clear()
+
+def dump_skipped_molecules(filepath: str):
+    """Dump skipped molecules to JSON file."""
+    import json
+    with open(filepath, 'w') as f:
+        json.dump({
+            "total_skipped": len(_SKIPPED_MOLECULES),
+            "molecules": _SKIPPED_MOLECULES
+        }, f, indent=2)
+    print(f"Dumped {len(_SKIPPED_MOLECULES)} skipped molecules to {filepath}")
+
 from SmilesPE.pretokenizer import atomwise_tokenizer
 
 from .constants import RGROUP_SYMBOLS, ABBREVIATIONS, VALENCES, FORMULA_REGEX
@@ -398,6 +429,10 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
     if symbol in ABBREVIATIONS:
         return ABBREVIATIONS[symbol].smiles
     if len(symbol) > 20:
+        record_skipped_molecule(
+            reason="symbol_too_long",
+            details=f"Symbol '{symbol}' exceeds 20 chars"
+        )
         return None
     # Skip symbols with unreasonably large subscripts - these are OCR garbage
     # Subscripts come AFTER element symbols (e.g., C12, H26) and should be small
@@ -406,6 +441,10 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
     for match in re.finditer(r'(?:[A-Z][a-z]?|[a-z])(\d+)', symbol):
         # Number after element symbol = subscript, limit to 50
         if int(match.group(1)) > 50:
+            record_skipped_molecule(
+                reason="large_subscript",
+                details=f"Symbol '{symbol}' has subscript {match.group(1)} > 50"
+            )
             return None
 
     total_bonds = int(sum([bond.GetBondTypeAsDouble() for bond in bonds]))
@@ -611,38 +650,32 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, skip_molblock=F
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
         _log2("_verify_chirality done")
         # Skip molblock if not needed (avoids potential hang on malformed molecules)
-        # Also skip for very large molecules (>100 atoms) - likely garbage, not worth waiting for timeout
-        if skip_molblock or n > 100:
-            if n > 100:
+        # Also skip for large molecules (>50 atoms) - likely garbage that could hang
+        if skip_molblock or n > 50:
+            if n > 50:
                 _log2(f"Skipping MolToMolBlock for large molecule ({n} atoms)")
+                record_skipped_molecule(
+                    reason="large_molecule_skip_molblock",
+                    num_atoms=n,
+                    symbols=symbols,
+                    details=f"Skipped MolToMolBlock for {n} atoms (threshold: 50)"
+                )
             pred_molblock = ''
         else:
             # molblock is obtained before expanding func groups, otherwise the expanded group won't have coordinates.
-            # Use timeout to avoid hanging on malformed molecules
             _log2("MolToMolBlock...")
-            import multiprocessing
-            MOLBLOCK_TIMEOUT = 5  # seconds
             try:
-                pool = multiprocessing.Pool(1)
-                async_result = pool.apply_async(Chem.MolToMolBlock, (mol,))
-                pred_molblock = async_result.get(timeout=MOLBLOCK_TIMEOUT)
-                pool.close()
-                pool.join()
-            except multiprocessing.TimeoutError:
-                _log2(f"MolToMolBlock TIMEOUT after {MOLBLOCK_TIMEOUT}s - skipping")
-                pool.terminate()
-                pool.join()
-                pred_molblock = ''
+                pred_molblock = Chem.MolToMolBlock(mol)
+                _log2("MolToMolBlock done")
             except Exception as e:
                 _log2(f"MolToMolBlock ERROR: {e}")
-                try:
-                    pool.terminate()
-                    pool.join()
-                except:
-                    pass
+                record_skipped_molecule(
+                    reason="molblock_error",
+                    num_atoms=n,
+                    symbols=symbols,
+                    details=f"MolToMolBlock failed: {e}"
+                )
                 pred_molblock = ''
-            else:
-                _log2("MolToMolBlock done")
         _log2("_expand_functional_group...")
         pred_smiles, mol = _expand_functional_group(mol, {}, debug)
         _log2(f"_expand_functional_group done, SMILES={pred_smiles[:50] if pred_smiles else 'None'}")
@@ -650,6 +683,12 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, skip_molblock=F
     except Exception as e:
         if debug:
             print(traceback.format_exc())
+        record_skipped_molecule(
+            reason="conversion_failed",
+            num_atoms=n,
+            symbols=symbols,
+            details=f"Graph to SMILES conversion failed: {e}"
+        )
         pred_molblock = ''
         success = False
 

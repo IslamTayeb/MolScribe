@@ -10,7 +10,12 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from .dataset import get_transforms
 from .model import Encoder, Decoder
-from .chemistry import convert_graph_to_smiles
+from .chemistry import (
+    convert_graph_to_smiles,
+    get_skipped_molecules,
+    clear_skipped_molecules,
+    dump_skipped_molecules,
+)
 from .tokenizer import get_tokenizer
 
 
@@ -210,6 +215,21 @@ class MolScribe:
     def get_last_convert_timing(self):
         """Get timing data from the last convert_graph_to_output call."""
         return getattr(self, '_last_convert_timing', None)
+
+    @staticmethod
+    def get_skipped_molecules():
+        """Get list of all molecules skipped during processing."""
+        return get_skipped_molecules()
+
+    @staticmethod
+    def clear_skipped_molecules():
+        """Clear the skipped molecules list."""
+        clear_skipped_molecules()
+
+    @staticmethod
+    def dump_skipped_molecules(filepath: str):
+        """Dump skipped molecules to JSON file."""
+        dump_skipped_molecules(filepath)
 
     def predict_image(self, image, return_atoms_bonds=False, return_confidence=False, skip_molblock=False):
         return self.predict_images([
