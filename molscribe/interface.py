@@ -163,8 +163,10 @@ class MolScribe:
         node_symbols = [pred['chartok_coords']['symbols'] for pred in predictions]
         edges = [pred['edges'] for pred in predictions]
         # node_symbols = [r_groups[symbol] if symbol in r_groups else symbol for symbol in node_symbols]
+        import os
+        num_workers = int(os.environ.get('MOLSCRIBE_NUM_WORKERS', '1'))
         smiles_list, molblock_list, r_success = convert_graph_to_smiles(
-            node_coords, node_symbols, edges, images=input_images, skip_molblock=skip_molblock)
+            node_coords, node_symbols, edges, images=input_images, num_workers=num_workers, skip_molblock=skip_molblock)
 
         outputs = []
         for smiles, molblock, pred in zip(smiles_list, molblock_list, predictions):
@@ -196,13 +198,13 @@ class MolScribe:
                             bond_list.append(bond_dict)
                 pred_dict["bonds"] = bond_list
             outputs.append(pred_dict)
-        
+
         # Store timing for retrieval
         self._last_convert_timing = {
             'smiles_conversion_time': time.time() - t0,
             'num_graphs': len(predictions)
         }
-        
+
         return outputs
 
     def get_last_convert_timing(self):
