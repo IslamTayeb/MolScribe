@@ -123,31 +123,16 @@ def normalize_nodes(nodes, flip_y=True):
 
 
 def _verify_chirality(mol, coords, symbols, edges, debug=False):
-    import time as _time
-    import sys
-    _DIAG = True  # Enable diagnostic logging
-
-    def _log(msg):
-        if _DIAG:
-            print(f"    [CHIRALITY] {msg}", file=sys.stderr, flush=True)
-
     try:
         n = mol.GetNumAtoms()
-        _log(f"Start: {n} atoms")
 
         # Make a temp mol to find chiral centers
         mol_tmp = mol.GetMol()
-        _log("SanitizeMol #1 (temp)...")
-        _t = _time.time()
         Chem.SanitizeMol(mol_tmp)
-        _log(f"SanitizeMol #1 done in {_time.time()-_t:.2f}s")
 
-        _log("FindMolChiralCenters...")
-        _t = _time.time()
         chiral_centers = Chem.FindMolChiralCenters(
             mol_tmp, includeUnassigned=True, includeCIP=False, useLegacyImplementation=False)
         chiral_center_ids = [idx for idx, _ in chiral_centers]  # List[Tuple[int, any]] -> List[int]
-        _log(f"FindMolChiralCenters done in {_time.time()-_t:.2f}s, found {len(chiral_centers)} centers")
 
         # correction to clear pre-condition violation (for some corner cases)
         for bond in mol.GetBonds():
@@ -160,14 +145,8 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         for i, (x, y) in enumerate(coords):
             conf.SetAtomPosition(i, (x, 1 - y, 0))
         mol.AddConformer(conf)
-        _log("SanitizeMol #2...")
-        _t = _time.time()
         Chem.SanitizeMol(mol)
-        _log(f"SanitizeMol #2 done in {_time.time()-_t:.2f}s")
-        _log("AssignStereochemistryFrom3D...")
-        _t = _time.time()
         Chem.AssignStereochemistryFrom3D(mol)
-        _log(f"AssignStereochemistryFrom3D done in {_time.time()-_t:.2f}s")
         # NOTE: seems that only AssignStereochemistryFrom3D can handle double bond E/Z
         # So we do this first, remove the conformer and add back the 2D conformer for chiral correction
 
@@ -179,18 +158,9 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         mol.AddConformer(conf)
 
         # Magic, inferring chirality from coordinates and BondDir. DO NOT CHANGE.
-        _log("SanitizeMol #3...")
-        _t = _time.time()
         Chem.SanitizeMol(mol)
-        _log(f"SanitizeMol #3 done in {_time.time()-_t:.2f}s")
-        _log("AssignChiralTypesFromBondDirs...")
-        _t = _time.time()
         Chem.AssignChiralTypesFromBondDirs(mol)
-        _log(f"AssignChiralTypesFromBondDirs done in {_time.time()-_t:.2f}s")
-        _log(f"AssignStereochemistry... (SMILES so far: {Chem.MolToSmiles(mol, isomericSmiles=False)})")
-        _t = _time.time()
         Chem.AssignStereochemistry(mol, force=True)
-        _log(f"AssignStereochemistry done in {_time.time()-_t:.2f}s")
 
         # Second loop to reset any wedge/dash bond to be starting from the chiral center)
         for i in chiral_center_ids:
@@ -497,17 +467,12 @@ BOND_TYPES = {1: Chem.rdchem.BondType.SINGLE, 2: Chem.rdchem.BondType.DOUBLE, 3:
 
 
 def _expand_functional_group(mol, mappings, debug=False):
-    import sys as _sys
-    def _log3(msg):
-        print(f"      [EXPAND] {msg}", file=_sys.stderr, flush=True)
-
     def _need_expand(mol, mappings):
         return any([len(Chem.GetAtomAlias(atom)) > 0 for atom in mol.GetAtoms()]) or len(mappings) > 0
 
     if _need_expand(mol, mappings):
         mol_w = Chem.RWMol(mol)
         num_atoms = mol_w.GetNumAtoms()
-        _log3(f"Need expansion: {num_atoms} atoms")
         for i, atom in enumerate(mol_w.GetAtoms()):  # reset radical electrons
             atom.SetNumRadicalElectrons(0)
 
@@ -523,14 +488,11 @@ def _expand_functional_group(mol, mappings, debug=False):
                     continue
                 # rgroups do not need to be expanded
                 if symbol in RGROUP_SYMBOLS:
-                    _log3(f"Atom {i}: symbol='{symbol}' is RGROUP, skipping")
                     continue
 
                 bonds = atom.GetBonds()
-                _log3(f"Atom {i}: symbol='{symbol}', {len(list(bonds))} bonds, calling get_smiles_from_symbol...")
                 bonds = atom.GetBonds()  # re-get iterator
                 sub_smiles = get_smiles_from_symbol(symbol, mol_w, atom, bonds)
-                _log3(f"Atom {i}: get_smiles_from_symbol returned '{sub_smiles}'")
 
                 # create mol object for abbreviation/condensed formula from its SMILES
                 mol_r = convert_smiles_to_mol(sub_smiles)
@@ -635,10 +597,6 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, skip_molblock=F
                 mol.GetBondBetweenAtoms(ids[i], ids[j]).SetBondDir(Chem.BondDir.BEGINDASH)
 
     pred_smiles = '<invalid>'
-    import sys as _sys
-
-    def _log2(msg):
-        print(f"    [CONVERT] {msg}", file=_sys.stderr, flush=True)
 
     try:
         # TODO: move to an util function
@@ -646,14 +604,11 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, skip_molblock=F
             height, width, _ = image.shape
             ratio = width / height
             coords = [[x * ratio * 10, y * 10] for x, y in coords]
-        _log2("_verify_chirality...")
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
-        _log2("_verify_chirality done")
         # Skip molblock if not needed (avoids potential hang on malformed molecules)
         # Also skip for large molecules (>50 atoms) - likely garbage that could hang
         if skip_molblock or n > 50:
             if n > 50:
-                _log2(f"Skipping MolToMolBlock for large molecule ({n} atoms)")
                 record_skipped_molecule(
                     reason="large_molecule_skip_molblock",
                     num_atoms=n,
@@ -663,12 +618,9 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, skip_molblock=F
             pred_molblock = ''
         else:
             # molblock is obtained before expanding func groups, otherwise the expanded group won't have coordinates.
-            _log2("MolToMolBlock...")
             try:
                 pred_molblock = Chem.MolToMolBlock(mol)
-                _log2("MolToMolBlock done")
             except Exception as e:
-                _log2(f"MolToMolBlock ERROR: {e}")
                 record_skipped_molecule(
                     reason="molblock_error",
                     num_atoms=n,
@@ -676,9 +628,7 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, skip_molblock=F
                     details=f"MolToMolBlock failed: {e}"
                 )
                 pred_molblock = ''
-        _log2("_expand_functional_group...")
         pred_smiles, mol = _expand_functional_group(mol, {}, debug)
-        _log2(f"_expand_functional_group done, SMILES={pred_smiles[:50] if pred_smiles else 'None'}")
         success = True
     except Exception as e:
         if debug:
@@ -709,27 +659,12 @@ def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=_DE
 
     # Skip multiprocessing when num_workers <= 1 to avoid fork() memory copy
     if num_workers <= 1:
-        print(f"[DEBUG] convert_graph_to_smiles: sequential mode, {len(args)} molecules", flush=True)
         results = []
-        import time as _time
-
-        for i, a in enumerate(args):
-            coords_i, symbols_i, edges_i, img_i, skip_mb = a
-            num_atoms = len(symbols_i) if symbols_i else 0
-
-            print(f"  [MOL {i+1}/{len(args)}] Processing: {num_atoms} atoms", flush=True)
-            _start = _time.time()
-
+        for a in args:
             try:
                 result = _convert_graph_to_smiles(*a)
-                _elapsed = _time.time() - _start
-                smiles_out = result[0] if result[0] else "(empty)"
-                success = result[2]
-                print(f"  [MOL {i+1}/{len(args)}] Done in {_elapsed:.2f}s, success={success}, SMILES={smiles_out[:50] if len(smiles_out) > 50 else smiles_out}", flush=True)
                 results.append(result)
             except Exception as e:
-                _elapsed = _time.time() - _start
-                print(f"  [MOL {i+1}/{len(args)}] ERROR after {_elapsed:.1f}s: {e}", flush=True)
                 results.append(('', '', False))
     else:
         with multiprocessing.Pool(num_workers) as p:
