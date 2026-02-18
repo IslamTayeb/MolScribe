@@ -1,6 +1,7 @@
 import argparse
 import time
 from typing import List
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import torch
@@ -115,9 +116,12 @@ class MolScribe:
             batch_images = input_images[idx:idx+batch_size]
             batch_timing = {'batch_idx': idx // batch_size, 'batch_size': len(batch_images)}
 
-            # Transform timing
+            # Transform timing — parallel with ThreadPoolExecutor
             t0 = time.time()
-            images = [self.transform(image=image, keypoints=[])['image'] for image in batch_images]
+            def _transform(image):
+                return self.transform(image=image, keypoints=[])['image']
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                images = list(pool.map(_transform, batch_images))
             transform_elapsed = time.time() - t0
             timing_data['transform_time'] += transform_elapsed
             batch_timing['transform_time'] = transform_elapsed
@@ -129,7 +133,7 @@ class MolScribe:
             timing_data['stack_to_device_time'] += stack_elapsed
             batch_timing['stack_to_device_time'] = stack_elapsed
 
-            with torch.no_grad():
+            with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16, enabled=(device.type == 'cuda')):
                 # Encoder timing
                 t0 = time.time()
                 features, hiddens = self.encoder(images)
