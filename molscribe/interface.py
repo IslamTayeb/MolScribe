@@ -87,7 +87,6 @@ class MolScribe:
 
         safe_load(encoder, states['encoder'])
         safe_load(decoder, states['decoder'])
-        # print(f"Model loaded from {load_path}")
 
         encoder.to(device)
         decoder.to(device)
@@ -95,7 +94,18 @@ class MolScribe:
         decoder.eval()
         return encoder, decoder
 
-    def predict_images(self, input_images: List, return_atoms_bonds=False, return_confidence=False, batch_size=16, skip_molblock=False):
+    def predict_images(self, input_images: List, return_atoms_bonds=False, return_confidence=False, batch_size=16, skip_molblock=False, pretransformed=False):
+        """
+        Predict molecular structures from images.
+
+        Args:
+            input_images: List of images (PIL/ndarray) or pre-transformed tensors if pretransformed=True
+            return_atoms_bonds: Include atom/bond info in output
+            return_confidence: Include confidence scores
+            batch_size: Batch size for inference (runner-level; internally processes all at once)
+            skip_molblock: Skip molblock generation
+            pretransformed: If True, input_images are already transformed tensors (skip CPU transform)
+        """
         device = self.device
         predictions = []
         self.decoder.compute_confidence = return_confidence
@@ -112,26 +122,47 @@ class MolScribe:
             'batches': []
         }
 
+        # Keep original images for SMILES conversion (needed for molblock generation)
+        original_images = input_images
+
         for idx in range(0, len(input_images), batch_size):
             batch_images = input_images[idx:idx+batch_size]
             batch_timing = {'batch_idx': idx // batch_size, 'batch_size': len(batch_images)}
 
-            # Transform timing — parallel with ThreadPoolExecutor
-            t0 = time.time()
-            def _transform(image):
-                return self.transform(image=image, keypoints=[])['image']
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                images = list(pool.map(_transform, batch_images))
-            transform_elapsed = time.time() - t0
-            timing_data['transform_time'] += transform_elapsed
-            batch_timing['transform_time'] = transform_elapsed
+            if pretransformed:
+                # Skip transform — images are already tensors
+                batch_timing['transform_time'] = 0
 
-            # Stack and move to device timing
-            t0 = time.time()
-            images = torch.stack(images, dim=0).to(device)
-            stack_elapsed = time.time() - t0
-            timing_data['stack_to_device_time'] += stack_elapsed
-            batch_timing['stack_to_device_time'] = stack_elapsed
+                t0 = time.time()
+                images = torch.stack(batch_images, dim=0)
+                if device.type == 'cuda':
+                    images = images.pin_memory().to(device, non_blocking=True)
+                else:
+                    images = images.to(device)
+                stack_elapsed = time.time() - t0
+                timing_data['stack_to_device_time'] += stack_elapsed
+                batch_timing['stack_to_device_time'] = stack_elapsed
+            else:
+                # Transform timing — parallel with ThreadPoolExecutor
+                t0 = time.time()
+                def _transform(image):
+                    return self.transform(image=image, keypoints=[])['image']
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    images = list(pool.map(_transform, batch_images))
+                transform_elapsed = time.time() - t0
+                timing_data['transform_time'] += transform_elapsed
+                batch_timing['transform_time'] = transform_elapsed
+
+                # Stack and move to device timing (pinned memory for async transfer)
+                t0 = time.time()
+                images = torch.stack(images, dim=0)
+                if device.type == 'cuda':
+                    images = images.pin_memory().to(device, non_blocking=True)
+                else:
+                    images = images.to(device)
+                stack_elapsed = time.time() - t0
+                timing_data['stack_to_device_time'] += stack_elapsed
+                batch_timing['stack_to_device_time'] = stack_elapsed
 
             with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16, enabled=(device.type == 'cuda')):
                 # Encoder timing
@@ -153,7 +184,7 @@ class MolScribe:
 
         # SMILES conversion timing
         t0 = time.time()
-        outputs = self.convert_graph_to_output(predictions, input_images, return_confidence, return_atoms_bonds, skip_molblock=skip_molblock)
+        outputs = self.convert_graph_to_output(predictions, original_images, return_confidence, return_atoms_bonds, skip_molblock=skip_molblock)
         timing_data['smiles_conversion_time'] = time.time() - t0
 
         # Store timing for retrieval
