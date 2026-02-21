@@ -165,16 +165,22 @@ class MolScribe:
                 batch_timing['stack_to_device_time'] = stack_elapsed
 
             with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16, enabled=(device.type == 'cuda')):
-                # Encoder timing
+                # Encoder timing (sync for accurate measurement)
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
                 t0 = time.time()
                 features, hiddens = self.encoder(images)
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
                 encoder_elapsed = time.time() - t0
                 timing_data['encoder_time'] += encoder_elapsed
                 batch_timing['encoder_time'] = encoder_elapsed
 
-                # Decoder timing
+                # Decoder timing (sync for accurate measurement)
                 t0 = time.time()
                 batch_predictions = self.decoder.decode(features, hiddens)
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
                 decoder_elapsed = time.time() - t0
                 timing_data['decoder_time'] += decoder_elapsed
                 batch_timing['decoder_time'] = decoder_elapsed
